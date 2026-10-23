@@ -1,16 +1,38 @@
 ---
-name: macos-memory-optimizer
+name: macos-optimizer-skill
 description: >-
-  排查和优化 macOS 本机内存使用情况。当用户说"内存不够 / 电脑卡 / 清理内存 / 释放内存 /
-  内存占用高 / 谁吃了我内存 / 内存诊断 / 内存压力大 / 优化内存"时触发。
-  先采集系统与硬件信息，再跑只读诊断报告，最后给出分级建议。
+  排查和优化 macOS 本机内存与磁盘使用。当用户说"内存不够 / 电脑卡 / 清理内存 / 释放内存 /
+  内存占用高 / 谁吃了我内存 / 内存诊断 / 内存压力大 / 优化内存 / 磁盘满了 / 清理垃圾 /
+  磁盘空间不足 / 垃圾清理 / 存储优化"时触发。
+  内存线先采集系统信息再跑只读诊断给分级建议；磁盘线用安全清理脚本（默认预演只统计），
+  双线均默认只读、任何写操作需列清单并经用户确认。
 ---
 
-# macOS 内存优化器
+# macOS 优化器（内存 + 磁盘）
 
-分三档的 Mac 内存排查与优化工具，**默认只读，不擅自清理**。
+macOS 本机排查与优化工具，覆盖 **内存线** 与 **磁盘线** 两条流程，**默认只读，不擅自清理**。
 
-## 流程
+## 任务路由表
+
+| 用户意图 | 路由 |
+|---|---|
+| 内存不够 / 卡 / 谁吃了内存 / 内存压力 / 释放内存 | 内存线 |
+| 内存诊断 / 内存报告 | 内存线 L1 |
+| 磁盘满 / 清理垃圾 / 空间不足 / 存储优化 | 磁盘线 |
+| "电脑卡"（未指明内存还是磁盘） | 先内存线 L1 看压力，再磁盘线 L0 看剩余空间 |
+| 误说 "C 盘" / "注册表" | 告知 macOS 无这些概念，走对应 Mac 方案（见 references/macos-disk.md） |
+
+## 安全原则（两条线通用）
+
+- **默认只读**：所有诊断脚本零副作用；清理脚本默认【预演模式】只统计不删除。
+- **删除前列清单并确认**：任何写操作（清缓存、退应用、清废纸篓）必须：
+  ① 列清单（命令 / 影响 / 预计释放 / 风险）→ ② 交用户确认 → ③ 执行后复检。
+- **不用 sudo**：所有系统级路径都不在清理范围，刻意避免提权。
+- **废纸篓默认不清理**：需 `--execute --trash` 双参数同时传入才执行；笼统的"清理垃圾"授权不包含废纸篓。
+
+---
+
+## 内存线（Memory）
 
 ### L1 · 诊断（只读，零副作用）
 
@@ -53,13 +75,59 @@ bash scripts/mem_diagnose.sh
 - 不用 `sudo`
 - 不碰系统关键进程（`com.apple.*` 且 PPID=1 的服务）
 
+---
+
+## 磁盘线（Disk）
+
+### L1 · 磁盘排查（只读）
+
+```bash
+df -h /                                    # 注意 APFS 下"可用"含可清除空间，数字会波动
+tmutil listlocalsnapshots /                # 本地时间机器快照（占空间常见原因）
+du -sh ~/Downloads ~/Movies ~/Documents 2>/dev/null
+find ~ -size +500M -not -path "*/Library/*" 2>/dev/null   # 只报告，让用户自己删
+```
+
+首选引导用户用系统自带工具：苹果菜单 → 系统设置 → 通用 → 存储（那里有安全的分类清理建议，比命令行删除更安全直观）。
+
+详细参考见 `references/macos-disk.md`。全程只读，不删除任何文件。
+
+### L2 · 安全清理（需确认）
+
+清理脚本默认【预演模式】，只统计不删除：
+
+```bash
+bash scripts/mac_clean.sh                  # 默认【预演】，只统计不删除
+bash scripts/mac_clean.sh --execute        # 实际清理（废纸篓仍需额外 --trash）
+bash scripts/mac_clean.sh --execute --trash  # 实际清理 + 清空废纸篓
+```
+
+**白名单（在范围内）**：用户级缓存 `~/Library/Caches`、用户日志 `~/Library/Logs`、Xcode 编译缓存 `~/Library/Developer/Xcode/DerivedData`、废纸篓 `~/.Trash`（仍需 `--trash`）。
+
+执行前必须：列清单 → 用户确认 → 执行后复检（重跑 L1 对比前后磁盘占用）。
+
+### L3 · 黑名单（禁止）
+
+以下任何一项都**绝不执行**：
+- `/System`、`/Library`（系统级，动了可能起不来）、`/private/var/db`
+- 关闭 SIP
+- 删除个人目录文件（桌面 / 文稿 / 下载等）
+- 未确认就清空废纸篓（必须 `--execute --trash` 双参数）
+- 任何需要 `sudo rm -rf` 的系统路径
+- 删除 `.app` 内部文件（"给应用瘦身"）、`~/Library/Keychains`
+- `/System/Library/Caches`、`/Library/Caches` 由系统管理，不要手动清
+
+---
+
 ## 文件结构
 
 ```
-macos-memory-optimizer/
+macos-optimizer-skill/
 ├── SKILL.md
 ├── scripts/
-│   └── mem_diagnose.sh       # L1 只读诊断脚本
+│   ├── mem_diagnose.sh       # 内存线 L1 只读诊断脚本
+│   └── mac_clean.sh          # 磁盘线 L1/L2 安全清理脚本（默认预演）
 └── references/
-    └── common-bottlenecks.md # 常见内存大户速查
+    ├── common-bottlenecks.md # 内存常见大户速查
+    └── macos-disk.md         # 磁盘清理与优化参考
 ```
